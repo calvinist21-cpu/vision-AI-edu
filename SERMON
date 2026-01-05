@@ -1,0 +1,655 @@
+
+import React, { useState, useRef } from 'react';
+import { Step, AppState } from './types';
+import { STEPS } from './constants';
+import { generateStepContent } from './services/geminiService';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
+
+// --- Sub-components ---
+
+const LoadingOverlay = () => (
+  <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-md">
+    <div className="relative">
+      <div className="absolute inset-0 animate-ping rounded-full bg-indigo-500/20"></div>
+      <div className="relative animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-indigo-500"></div>
+    </div>
+    <div className="mt-8 text-center">
+      <p className="text-xl font-light text-white tracking-widest uppercase">Analyzing Vision</p>
+      <p className="text-sm text-slate-500 mt-2">Connecting theological research nodes...</p>
+    </div>
+  </div>
+);
+
+const GlassCard = ({ children, className = "", ...props }: { children?: React.ReactNode; className?: string; [key: string]: any }) => (
+  <div className={`glass rounded-2xl p-8 transition-all duration-500 hover:border-slate-700/50 ${className}`} {...props}>
+    {children}
+  </div>
+);
+
+const SectionLabel = ({ children }: { children?: React.ReactNode }) => (
+  <span className="text-[10px] font-bold tracking-[0.2em] text-indigo-400 uppercase mb-4 block">
+    {children}
+  </span>
+);
+
+const JsonViewer = ({ data }: { data: any }) => {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="mt-8 pt-8 border-t border-slate-800 no-print json-viewer">
+      <button 
+        onClick={() => setShow(!show)} 
+        className="text-[10px] text-slate-500 hover:text-white transition-colors font-bold uppercase tracking-widest"
+      >
+        {show ? "Collapse Source Data" : "View Source Data"}
+      </button>
+      {show && (
+        <pre className="mt-4 p-6 bg-slate-900/50 text-indigo-300 rounded-xl text-xs overflow-auto max-h-80 border border-slate-800 font-mono">
+          {JSON.stringify(data, null, 2)}
+        </pre>
+      )}
+    </div>
+  );
+};
+
+export default function App() {
+  const draftRef = useRef<HTMLDivElement>(null);
+  const [appState, setAppState] = useState<AppState>({
+    current_step: 'research',
+    base_input: {
+      passage: '로마서 8:1-11',
+      translation: '개역개정',
+      user_profile: {
+        denomination: '장로교',
+        role: '목사',
+        tone_preference: 'pastoral'
+      },
+      audience: '장년',
+      language: 'ko'
+    },
+    research_json: null,
+    learning_json: null,
+    analysis_json: null,
+    meditation_json: null,
+    draft_json: null,
+  });
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const updateBaseInput = (field: string, value: any) => {
+    setAppState(prev => ({
+      ...prev,
+      base_input: { ...prev.base_input, [field]: value }
+    }));
+  };
+
+  const updateProfile = (field: string, value: string) => {
+    setAppState(prev => ({
+      ...prev,
+      base_input: {
+        ...prev.base_input,
+        user_profile: { ...prev.base_input.user_profile, [field]: value }
+      }
+    }));
+  };
+
+  const handleGenerate = async (step: Step) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await generateStepContent(appState, step);
+      setAppState(prev => ({
+        ...prev,
+        current_step: step,
+        [`${step}_json`]: result
+      }));
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err: any) {
+      setError(`System Error: ${err.message || 'The architecture failed to synthesize.'}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resetAll = () => {
+    setAppState(prev => ({
+      ...prev,
+      research_json: null,
+      learning_json: null,
+      analysis_json: null,
+      meditation_json: null,
+      draft_json: null,
+      current_step: 'research'
+    }));
+    setError(null);
+  };
+
+  const handleDownloadPDF = async () => {
+    if (!draftRef.current) return;
+    setLoading(true);
+    try {
+      const element = draftRef.current;
+      const canvas = await html2canvas(element, {
+        scale: 2.5,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        windowWidth: 794, 
+      });
+
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+      
+      const imgWidth = canvas.width;
+      const imgHeight = canvas.height;
+      const ratio = imgWidth / pdfWidth;
+      const finalImgHeight = imgHeight / ratio;
+
+      let heightLeft = finalImgHeight;
+      let position = 0;
+
+      pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, finalImgHeight);
+      heightLeft -= pdfHeight;
+
+      while (heightLeft >= 0) {
+        position = heightLeft - finalImgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, finalImgHeight);
+        heightLeft -= pdfHeight;
+      }
+
+      pdf.save(`${appState.draft_json?.title || 'sermon_draft'}.pdf`);
+    } catch (err) {
+      console.error('PDF Export Error:', err);
+      alert('PDF 생성 중 오류가 발생했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePrint = () => {
+    window.print();
+  };
+
+  const renderContent = () => {
+    switch (appState.current_step) {
+      case 'research':
+        if (!appState.research_json) return null;
+        const res = appState.research_json;
+        return (
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-1000">
+            <div className="grid lg:grid-cols-12 gap-8">
+              <GlassCard className="lg:col-span-7">
+                <SectionLabel>Contextual Background</SectionLabel>
+                <div className="grid grid-cols-2 gap-8 mb-8">
+                  <div>
+                    <h4 className="text-slate-500 text-xs font-bold uppercase mb-2">Author</h4>
+                    <p className="text-xl font-medium text-white">{res.historical_background.author || 'Undefined'}</p>
+                  </div>
+                  <div>
+                    <h4 className="text-slate-500 text-xs font-bold uppercase mb-2">Recipient</h4>
+                    <p className="text-xl font-medium text-white">{res.historical_background.audience || 'Undefined'}</p>
+                  </div>
+                </div>
+                <div className="mb-8">
+                  <h4 className="text-slate-500 text-xs font-bold uppercase mb-2">Historical Era</h4>
+                  <p className="text-slate-300 leading-relaxed">{res.historical_background.date_context}</p>
+                </div>
+                <div className="p-6 bg-indigo-500/5 border border-indigo-500/20 rounded-xl">
+                  <p className="text-indigo-300 italic font-light">{res.historical_background.notes}</p>
+                </div>
+              </GlassCard>
+
+              <div className="lg:col-span-5 space-y-8">
+                <GlassCard>
+                  <SectionLabel>Literary Structure</SectionLabel>
+                  <p className="text-slate-300 text-sm leading-relaxed mb-4">{res.literary_context.book_structure}</p>
+                  <div className="h-px bg-slate-800 my-4" />
+                  <p className="text-white font-medium">{res.literary_context.immediate_context}</p>
+                </GlassCard>
+                <GlassCard>
+                  <SectionLabel>Philological Analysis</SectionLabel>
+                  <div className="space-y-6">
+                    {res.key_terms.map((t, i) => (
+                      <div key={i} className="group">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-lg font-bold text-white">{t.term}</span>
+                          <span className="text-[10px] px-2 py-0.5 border border-slate-700 rounded text-slate-500">{t.language}</span>
+                        </div>
+                        <p className="text-xs text-indigo-400 mb-2">{t.meaning}</p>
+                        <p className="text-sm text-slate-400 group-hover:text-slate-200 transition-colors">{t.theological_significance}</p>
+                      </div>
+                    ))}
+                  </div>
+                </GlassCard>
+              </div>
+            </div>
+
+            <GlassCard>
+              <SectionLabel>Theological Trajectories</SectionLabel>
+              <div className="flex flex-wrap gap-2 mb-8">
+                {res.theological_themes.map((theme, i) => (
+                  <span key={i} className="px-4 py-1 bg-white/5 border border-slate-700 text-white rounded-full text-xs font-medium">{theme}</span>
+                ))}
+              </div>
+              <div className="grid md:grid-cols-2 gap-8">
+                {res.interpretive_issues.map((issue, i) => (
+                  <div key={i} className="space-y-2">
+                    <h4 className="text-white font-bold">{issue.issue}</h4>
+                    <p className="text-slate-400 text-sm leading-relaxed">{issue.summary}</p>
+                  </div>
+                ))}
+              </div>
+            </GlassCard>
+
+            <div className="flex justify-end pt-8">
+               <button 
+                  onClick={() => handleGenerate('learning')}
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-10 py-4 rounded-full font-bold transition-all shadow-2xl shadow-indigo-500/20 active:scale-95"
+               >
+                 Initialize Learning Module →
+               </button>
+            </div>
+            <JsonViewer data={res} />
+          </div>
+        );
+
+      case 'learning':
+        if (!appState.learning_json) return null;
+        const learn = appState.learning_json;
+        return (
+          <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-1000">
+            <GlassCard className="border-l-4 border-l-indigo-500">
+              <SectionLabel>Core Narrative Synthesis</SectionLabel>
+              <p className="text-3xl font-light text-white leading-tight mb-8">
+                {learn.core_message}
+              </p>
+              <div className="bg-amber-500/5 border border-amber-500/20 p-6 rounded-2xl">
+                <h4 className="text-amber-500 text-xs font-bold uppercase tracking-widest mb-4 flex items-center">
+                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                  System Guardrails
+                </h4>
+                <ul className="space-y-3">
+                  {learn.common_misunderstandings.map((m, i) => (
+                    <li key={i} className="text-slate-300 text-sm flex items-start">
+                      <span className="text-amber-500 mr-3 mt-1 text-lg leading-none">×</span>
+                      {m}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </GlassCard>
+
+            <div className="grid md:grid-cols-2 gap-8">
+              <GlassCard>
+                <SectionLabel>Theological Thesis</SectionLabel>
+                <p className="text-white text-lg font-medium italic">"{learn.key_takeaway_sentence}"</p>
+              </GlassCard>
+              <GlassCard>
+                <SectionLabel>Doctrinal Boundaries</SectionLabel>
+                <ul className="space-y-2">
+                  {learn.doctrinal_guardrails.map((g, i) => <li key={i} className="text-slate-400 text-sm">• {g}</li>)}
+                </ul>
+              </GlassCard>
+            </div>
+
+            <div className="flex justify-between pt-8">
+               <button onClick={() => setAppState(p => ({...p, current_step: 'research'}))} className="text-slate-500 hover:text-white px-6 py-4 font-bold uppercase text-xs tracking-widest transition-colors">Back to Research</button>
+               <button 
+                  onClick={() => handleGenerate('analysis')}
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-10 py-4 rounded-full font-bold transition-all shadow-2xl shadow-indigo-500/20 active:scale-95"
+               >
+                 Commence Structural Analysis →
+               </button>
+            </div>
+            <JsonViewer data={learn} />
+          </div>
+        );
+
+      case 'analysis':
+        if (!appState.analysis_json) return null;
+        const analysis = appState.analysis_json;
+        return (
+          <div className="max-w-5xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-1000">
+            <div className="text-center mb-16">
+               <SectionLabel>Architecture: The Big Idea</SectionLabel>
+               <h2 className="text-5xl font-extrabold text-white tracking-tight leading-none">{analysis.big_idea}</h2>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-8">
+              {analysis.sermon_points.map((pt, i) => (
+                <GlassCard key={i} className="flex flex-col h-full hover:scale-[1.02] transform transition-transform border-slate-800">
+                  <div className="text-indigo-500 font-black text-4xl mb-6 opacity-20">0{i + 1}</div>
+                  <h4 className="text-xl font-bold text-white mb-2">{pt.title}</h4>
+                  <p className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest mb-4">{pt.textual_basis}</p>
+                  <p className="text-slate-400 text-sm leading-relaxed flex-grow">{pt.summary}</p>
+                </GlassCard>
+              ))}
+            </div>
+
+            <GlassCard className="bg-slate-900/80">
+              <div className="grid md:grid-cols-2 gap-12">
+                <div>
+                  <SectionLabel>Logical Flow Analysis</SectionLabel>
+                  <p className="text-slate-300 text-sm leading-relaxed">{analysis.logical_flow}</p>
+                </div>
+                <div>
+                  <SectionLabel>Theological Depth</SectionLabel>
+                  <p className="text-slate-300 text-sm leading-relaxed">{analysis.theological_emphasis}</p>
+                </div>
+              </div>
+            </GlassCard>
+
+            <div className="flex justify-between pt-8">
+               <button onClick={() => setAppState(p => ({...p, current_step: 'learning'}))} className="text-slate-500 hover:text-white px-6 py-4 font-bold uppercase text-xs tracking-widest transition-colors">Review Synthesis</button>
+               <button 
+                  onClick={() => handleGenerate('meditation')}
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-10 py-4 rounded-full font-bold transition-all shadow-2xl shadow-indigo-500/20 active:scale-95"
+               >
+                 Generate Applied Meditation →
+               </button>
+            </div>
+            <JsonViewer data={analysis} />
+          </div>
+        );
+
+      case 'meditation':
+        if (!appState.meditation_json) return null;
+        const med = appState.meditation_json;
+        return (
+          <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-1000">
+            <GlassCard className="bg-gradient-to-br from-indigo-600/10 to-transparent border-indigo-500/30">
+               <SectionLabel>Christ-Centered Reflection</SectionLabel>
+               <p className="text-2xl font-light text-white leading-relaxed italic">
+                 {med.christ_centered_reflection}
+               </p>
+            </GlassCard>
+
+            <div className="grid md:grid-cols-2 gap-8">
+              <GlassCard>
+                 <SectionLabel>Individual Activation</SectionLabel>
+                 <ul className="space-y-4 text-slate-300 text-sm">
+                   {med.personal_application.map((a, i) => <li key={i} className="flex items-start"><span className="text-indigo-500 mr-3">→</span>{a}</li>)}
+                 </ul>
+              </GlassCard>
+              <GlassCard>
+                 <SectionLabel>Community Integration</SectionLabel>
+                 <ul className="space-y-4 text-slate-300 text-sm">
+                   {med.community_application.map((a, i) => <li key={i} className="flex items-start"><span className="text-indigo-500 mr-3">→</span>{a}</li>)}
+                 </ul>
+              </GlassCard>
+            </div>
+
+            <GlassCard>
+              <SectionLabel>Strategic Prayer Focus</SectionLabel>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                 {med.prayer_focus.map((p, i) => (
+                   <div key={i} className="p-4 bg-white/5 border border-slate-800 rounded-xl text-slate-400 text-sm italic group hover:text-white hover:border-indigo-500/50 transition-all">
+                     "{p}"
+                   </div>
+                 ))}
+              </div>
+            </GlassCard>
+
+            <div className="flex justify-between pt-8">
+               <button onClick={() => setAppState(p => ({...p, current_step: 'analysis'}))} className="text-slate-500 hover:text-white px-6 py-4 font-bold uppercase text-xs tracking-widest transition-colors">Review Structure</button>
+               <button 
+                  onClick={() => handleGenerate('draft')}
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-10 py-4 rounded-full font-bold transition-all shadow-2xl shadow-indigo-500/20 active:scale-95"
+               >
+                 Finalize Visionary Draft →
+               </button>
+            </div>
+            <JsonViewer data={med} />
+          </div>
+        );
+
+      case 'draft':
+        if (!appState.draft_json) return null;
+        const draft = appState.draft_json;
+        return (
+          <div className="max-w-4xl mx-auto space-y-12 pb-24 animate-in fade-in duration-1000">
+             <div className="flex flex-col md:flex-row md:justify-between md:items-end no-print gap-6">
+                <div className="text-left space-y-4">
+                   <SectionLabel>Final Architecture</SectionLabel>
+                   <h2 className="text-5xl md:text-6xl font-black text-white tracking-tighter uppercase">{draft.title}</h2>
+                   <div className="flex items-center space-x-6 text-slate-500 text-[10px] font-bold tracking-[0.3em] uppercase">
+                      <span>Passage: {appState.base_input.passage}</span>
+                      <span className="w-1 h-1 bg-indigo-500 rounded-full"></span>
+                      <span>Runtime: {draft.estimated_duration_minutes}m</span>
+                   </div>
+                </div>
+                <div className="flex space-x-3 mb-2">
+                  <button 
+                    onClick={handleDownloadPDF}
+                    className="px-5 py-2.5 border border-slate-700 rounded-full text-[10px] font-bold text-slate-400 hover:text-white hover:border-indigo-500 transition-all uppercase tracking-[0.2em] flex items-center space-x-2 bg-slate-900/50"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                    <span>A4 PDF</span>
+                  </button>
+                  <button 
+                    onClick={handlePrint}
+                    className="px-5 py-2.5 border border-slate-700 rounded-full text-[10px] font-bold text-slate-400 hover:text-white hover:border-indigo-500 transition-all uppercase tracking-[0.2em] flex items-center space-x-2 bg-slate-900/50"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>
+                    <span>Print</span>
+                  </button>
+                </div>
+             </div>
+
+             {/* Print Output Section with Logic for Pagination */}
+             <div id="print-area" ref={draftRef} className="bg-white text-slate-950 p-12 md:p-20 rounded-[2.5rem] shadow-2xl leading-relaxed font-serif text-lg selection:bg-indigo-100 overflow-visible">
+                <div className="sermon-section mb-16">
+                   <h3 className="text-3xl font-black mb-8 uppercase tracking-tighter">Exordium</h3>
+                   <div className="text-xl text-slate-900 leading-loose whitespace-pre-wrap">{draft.introduction}</div>
+                </div>
+
+                {draft.body.map((item, i) => (
+                  <div 
+                    key={i} 
+                    className={`sermon-section mb-16 ${i === 1 ? 'force-page-break' : ''}`}
+                  >
+                    <h3 className="text-3xl font-black mb-8 uppercase tracking-tighter">Dimension {i+1}: {item.point_title}</h3>
+                    <div className="text-xl text-slate-900 leading-loose whitespace-pre-wrap">{item.content}</div>
+                  </div>
+                ))}
+
+                <div className="sermon-section mt-20 conclusion-box">
+                   <h3 className="text-3xl font-black mb-8 uppercase tracking-tighter border-none">Peroration</h3>
+                   <div className="text-xl text-slate-800 leading-loose italic whitespace-pre-wrap">{draft.conclusion}</div>
+                </div>
+             </div>
+
+             <div className="flex justify-center space-x-6 no-print">
+                <button 
+                  onClick={() => handleGenerate('draft')}
+                  className="bg-slate-800 text-white px-8 py-3 rounded-full font-bold hover:bg-slate-700 transition-all uppercase text-xs tracking-widest"
+                >
+                  Regenerate Draft
+                </button>
+                <button 
+                  onClick={resetAll}
+                  className="bg-indigo-600 text-white px-8 py-3 rounded-full font-bold hover:bg-indigo-500 transition-all uppercase text-xs tracking-widest shadow-xl shadow-indigo-500/30"
+                >
+                  New Architecture
+                </button>
+             </div>
+             <JsonViewer data={draft} />
+          </div>
+        );
+    }
+  };
+
+  return (
+    <div className="min-h-screen">
+      {loading && <LoadingOverlay />}
+      
+      {/* Navbar */}
+      <nav className="fixed top-0 left-0 right-0 z-40 glass border-b-0 no-print">
+        <div className="max-w-7xl mx-auto px-6 lg:px-12 h-20 flex justify-between items-center">
+          <div className="flex items-center space-x-3 group cursor-pointer" onClick={resetAll}>
+            <div className="w-8 h-8 bg-indigo-600 rounded flex items-center justify-center transform group-hover:rotate-12 transition-transform">
+              <div className="w-3 h-3 bg-white rounded-full"></div>
+            </div>
+            <h1 className="text-lg font-black tracking-tighter text-white uppercase group-hover:text-indigo-400 transition-colors">
+              His Vision <span className="font-light opacity-50 ml-1">Architect</span>
+            </h1>
+          </div>
+          <div className="flex items-center space-x-8">
+            <button 
+              onClick={resetAll} 
+              className="text-[10px] font-bold text-slate-500 hover:text-white uppercase tracking-[0.3em] transition-colors"
+            >
+              System Reset
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      <main className="pt-32 pb-24 px-6 lg:px-12 max-w-7xl mx-auto">
+        
+        {/* Landing Hero Area */}
+        {!appState.research_json && !loading && (
+          <div className="space-y-24">
+            <section className="text-center max-w-4xl mx-auto space-y-8 py-12">
+               <h2 className="text-7xl font-black text-white leading-[0.9] tracking-tighter uppercase animate-in fade-in slide-in-from-top-12 duration-1000">
+                 The intersection of <br/>
+                 <span className="text-gradient">Sacred Text & Artificial Intelligence</span>
+               </h2>
+               <p className="text-xl text-slate-400 font-light leading-relaxed max-w-2xl mx-auto animate-in fade-in duration-1000 delay-300">
+                 Synthesizing biblical scholarship with pastoral intuition through deep-learning models to architect sermons that resonate with modern clarity.
+               </p>
+            </section>
+
+            <section className="max-w-3xl mx-auto animate-in fade-in slide-in-from-bottom-12 duration-1000 delay-500">
+              <GlassCard className="p-10">
+                <SectionLabel>Initialize Architectural Parameters</SectionLabel>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8">
+                   <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Scripture Focus</label>
+                      <input 
+                        className="w-full p-4 bg-slate-900/50 border border-slate-800 rounded-xl text-white focus:border-indigo-500 transition-all outline-none" 
+                        value={appState.base_input.passage}
+                        onChange={e => updateBaseInput('passage', e.target.value)}
+                        placeholder="e.g. Romans 8:1-11"
+                      />
+                   </div>
+                   <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Version</label>
+                      <input 
+                        className="w-full p-4 bg-slate-900/50 border border-slate-800 rounded-xl text-white focus:border-indigo-500 transition-all outline-none" 
+                        value={appState.base_input.translation}
+                        onChange={e => updateBaseInput('translation', e.target.value)}
+                        placeholder="e.g. 개역개정, NIV"
+                      />
+                   </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-8">
+                   <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Denomination</label>
+                      <select 
+                        className="w-full p-4 bg-slate-900/50 border border-slate-800 rounded-xl text-white outline-none focus:border-indigo-500 appearance-none"
+                        value={appState.base_input.user_profile.denomination}
+                        onChange={e => updateProfile('denomination', e.target.value)}
+                      >
+                        <option value="장로교">Presbyterian</option>
+                        <option value="감리교">Methodist</option>
+                        <option value="순복음">Pentecostal</option>
+                        <option value="침례교">Baptist</option>
+                        <option value="복음주의">Evangelical</option>
+                        <option value="unspecified">Unspecified</option>
+                      </select>
+                   </div>
+                   <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Tone Vector</label>
+                      <select 
+                        className="w-full p-4 bg-slate-900/50 border border-slate-800 rounded-xl text-white outline-none focus:border-indigo-500 appearance-none"
+                        value={appState.base_input.user_profile.tone_preference}
+                        onChange={e => updateProfile('tone_preference', e.target.value)}
+                      >
+                        <option value="expository">Expository</option>
+                        <option value="pastoral">Pastoral</option>
+                        <option value="evangelistic">Evangelistic</option>
+                        <option value="narrative">Narrative</option>
+                      </select>
+                   </div>
+                   <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Language</label>
+                      <select 
+                        className="w-full p-4 bg-slate-900/50 border border-slate-800 rounded-xl text-white outline-none focus:border-indigo-500 appearance-none"
+                        value={appState.base_input.language}
+                        onChange={e => updateBaseInput('language', e.target.value)}
+                      >
+                        <option value="ko">Korean</option>
+                        <option value="en">English</option>
+                      </select>
+                   </div>
+                </div>
+
+                <button 
+                  onClick={() => handleGenerate('research')}
+                  className="w-full mt-12 bg-indigo-600 hover:bg-indigo-500 text-white font-black py-5 rounded-full shadow-2xl shadow-indigo-500/20 transition-all active:scale-[0.98] uppercase tracking-[0.2em] text-sm"
+                >
+                  Start Architectural Analysis
+                </button>
+              </GlassCard>
+            </section>
+          </div>
+        )}
+
+        {/* Multi-step Header */}
+        {appState.research_json && !loading && (
+          <div className="mb-16 flex justify-center no-print">
+            <div className="inline-flex glass rounded-full p-1 hide-scrollbar overflow-x-auto">
+              {STEPS.map((s, i) => (
+                <button
+                  key={s.id}
+                  disabled={!appState[`${s.id}_json` as keyof AppState] && appState.current_step !== s.id}
+                  onClick={() => setAppState(prev => ({...prev, current_step: s.id as Step}))}
+                  className={`px-6 py-3 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all ${
+                    appState.current_step === s.id 
+                    ? 'bg-white text-slate-950 shadow-lg' 
+                    : (appState[`${s.id}_json` as keyof AppState] 
+                        ? 'text-slate-200 hover:text-white' 
+                        : 'text-slate-600 cursor-not-allowed')
+                  }`}
+                >
+                  {s.label.split(' ')[0]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Error State */}
+        {error && (
+          <div className="max-w-2xl mx-auto mt-4 p-6 glass border-red-500/50 text-red-400 rounded-xl font-medium flex items-center no-print">
+             <span className="mr-3">!</span>
+             {error}
+          </div>
+        )}
+
+        {/* Content Render */}
+        <div className="relative">
+          {renderContent()}
+        </div>
+      </main>
+
+      {/* Technical Footer */}
+      {!loading && (
+        <footer id="technical-footer" className="mt-24 py-12 border-t border-slate-900 px-6 lg:px-12 max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center text-slate-600 no-print">
+           <div className="text-[10px] uppercase tracking-[0.4em] font-bold">His Vision System v2.5.0</div>
+           <div className="flex space-x-8 mt-6 md:mt-0 text-[10px] font-bold uppercase tracking-widest">
+             <span className="hover:text-indigo-400 cursor-help">Technical Safety</span>
+             <span className="hover:text-indigo-400 cursor-help">Exegetical Guardrails</span>
+             <span className="hover:text-indigo-400 cursor-help">Biblical Ethics</span>
+           </div>
+        </footer>
+      )}
+    </div>
+  );
+}
